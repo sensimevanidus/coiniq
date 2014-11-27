@@ -35,13 +35,15 @@ var pdiqClientConfig = {
     gameNumber: 1, // number of the game in the current session
     lossCounter: 0, // number of successive losses
     winCounter: 0, // number of successive wins
+    regenerateSeedAt: 10, // frequence of seed regeneration
     
     /**
      * Game related
      */
     direction: '<', // algorithm's direction choice for the current game '<' or '>'
     target: 80, // base number used for deciding whether or not the user wins the game
-    divider: 27000.0, // a number used by the algorithm for adjusting bet for the game
+    defaultTarget: 80, // base number used for deciding whether or not the user wins the game
+    divider: 950.0, // a number used by the algorithm for adjusting bet for the game
                       // (e.g 950.0 for 5 losses, 5000.0 for 6 losses, 27000.0 for 7
                       // losses 137000.0 for 8 losses)
     timeout: 5000 // number of milliseconds for API response timeout
@@ -59,7 +61,16 @@ var pdiqClient = {
         this.accessToken = process.argv[2];
         
         // How many games will this session have?
-        this.numberOfGames = process.argv[3];
+        this.numberOfGames = parseInt(process.argv[3]);
+
+        // Reset profits
+        this.totalProfit = 0.0;
+        this.totalProfitPercentage = 0.0;
+
+        // Reset counters
+        this.gameNumber = 1;
+        this.lossCounter = 0;
+        this.winCounter = 0;
         
         if (this.accessToken) {
             // Fetch user information.
@@ -71,12 +82,17 @@ var pdiqClient = {
             throw 'You must provide your Primedice access token to continue.';
         }
     },
+
+    /**
+     * Main method
+     */
     run: function() {
-        request.post(this._getAPIURL('/bet'), {
+        var self = this;
+        request.post(self._getAPIURL('/bet'), {
             json: true,
             timeout: pdiqClientConfig.timeout,
             form: {
-                amount: pdiqClientConfig.amount,
+                amount: pdiqClientConfig.betAmount,
                 target: pdiqClientConfig.target,
                 condition: pdiqClientConfig.direction
             }
@@ -93,7 +109,7 @@ var pdiqClient = {
                     var gameWon = result.bet.win;
                     
                     // Store the previous bet amount
-                    pdiqClientConfig.previousBetAmount = amount;
+                    pdiqClientConfig.previousBetAmount = pdiqClientConfig.betAmount;
                     
                     // Update the user balance
                     pdiqClientConfig.balance = result.user.balance;
@@ -113,27 +129,27 @@ var pdiqClient = {
                     pdiqClientConfig.totalProfitPercentage = parseFloat((pdiqClientConfig.totalProfit / pdiqClientConfig.startingBalance) * 100).toFixed(2);
                     
                     // If the game is won;
-                    if (gameWon) {
+                    if (gameWon) { 
+                        // Reset the bet amount
+                        if (pdiqClientConfig.balance > 0.0 && pdiqClientConfig.betAmount > 0.0) {
+                            pdiqClientConfig.betAmount = parseFloat(pdiqClientConfig.balance / pdiqClientConfig.divider).toFixed(2);
+                        } else {
+                            pdiqClientConfig.betAmount = pdiqClientConfig.defaultBetAmount;
+                        }
+
                         // Reset the loss counter
                         pdiqClientConfig.lossCounter = 0;
-                        
-                        // Reset the bet amount
-                        if (pdiqClientConfig.balance > 0.0) {
-                            pdiqClientConfig.amount = parseFloat(pdiqClientConfig.balance / pdiqClientConfig.divider).toFixed(2);
-                        } else {
-                            pdiqClientConfig.amount = pdiqClientConfig.defaultAmount;
-                        }
                     }
                     
                     // Or else (if the game is lost);
                     else {
+                        // Increase the bet amount
+                        pdiqClientConfig.betAmount *= 5.25;
+
                         // Increment the loss counter
                         pdiqClientConfig.lossCounter++;
-
-                        // Increase the bet amount
-                        pdiqClientConfig.amount *= 5.25;
                     }
-                    
+
                     /**
                      * Output useful information
                      */
@@ -152,22 +168,56 @@ var pdiqClient = {
                     
                     console.log(
                         pdiqClientConfig.gameNumber + '. ' + winStr + "\t" +
-                        "(" + result.bet.roll + ' ' + pdiqClientConfig.direction + ' ' + pdiqClientConfig.target + ")\t" +
-                        "Bet: " + parseFloat(pdiqClientConfig.oldAmount).toFixed(2) + "\t\t" +
+                        "(" + pdiqClientConfig.lossCounter + ") " +    
+                        "(" + parseFloat(result.bet.roll).toFixed(2) + ' ' + pdiqClientConfig.direction + ' ' + parseFloat(pdiqClientConfig.target).toFixed(2) + ")\t\t" +
+                        "Bet: " + parseFloat(pdiqClientConfig.previousBetAmount).toFixed(2) + "\t\t" +
                         "Balance: " + pdiqClientConfig.balance + "\t\t" + totalProfitStr
                     );
+
+                    // Modify direction (if necessary)
+                    if (! gameWon && (3 == pdiqClientConfig.lossCounter || 5 == pdiqClientConfig.lossCounter)) {
+                        pdiqClientConfig.direction = '>';
+                        pdiqClientConfig.target = 100 - pdiqClientConfig.target;
+                    } else {
+                        pdiqClientConfig.direction = '<';
+                        pdiqClientConfig.target = pdiqClientConfig.defaultTarget;
+                    }
                 } else {
                     console.log(pdiqClientConfig.gameNumber + '. - Something\'s wrong! Result: ' + result);
                 }
                 
-                // Continue the loop
-                if (++pdiqClientConfig.gameNumber < this.numberOfGames) {
-                    var self = this;
-                    setTimeout(function() {
-                        self.run();
-                    }, 50);
+                // Regenerate seed (if necessary)
+                if (0 < pdiqClientConfig.gameNumber && 0 == pdiqClientConfig.gameNumber % pdiqClientConfig.regenerateSeedAt) {
+                    request.post(self._getAPIURL('/seed'), {
+                        json: true,
+                        timeout: pdiqClientConfig.timeout,
+                        form: {
+                            seed: self._generateSeed()
+                        }
+                    }, function callback(err, httpResponse, result) {
+                        if (err) {
+                            console.log('Could not regenerate seed! Error: ' + err);
+                        } else {
+                            console.log('Regenerated seed!');
+                        }
+                        // Continue the loop
+                        if (++pdiqClientConfig.gameNumber <= self.numberOfGames) {
+                            setTimeout(function() {
+                                self.run();
+                            }, 50);
+                        } else {
+                            self.end();
+                        }
+                    });
                 } else {
-                    self.end();
+                    // Continue the loop
+                    if (++pdiqClientConfig.gameNumber <= self.numberOfGames) {
+                        setTimeout(function() {
+                            self.run();
+                        }, 50);
+                    } else {
+                        self.end();
+                    }
                 }
             }
         });
@@ -177,6 +227,16 @@ var pdiqClient = {
     },
     _getAPIURL: function(path) {
         return 'https://api.primedice.com/api' + path + '?access_token=' + this.accessToken;
+    },
+    _generateSeed: function() {
+        var seed = '';
+        var alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+        
+        for (var i = 0; i < 30; i++) {
+            seed += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
+        }
+
+        return seed;
     }
 }
 
