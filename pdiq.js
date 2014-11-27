@@ -35,7 +35,7 @@ var pdiqClientConfig = {
     gameNumber: 1, // number of the game in the current session
     lossCounter: 0, // number of successive losses
     winCounter: 0, // number of successive wins
-    regenerateSeedAt: 10, // frequence of seed regeneration
+    regenerateSeedAt: 100, // frequence of seed regeneration
     
     /**
      * Game related
@@ -99,6 +99,14 @@ var pdiqClient = {
         }, function callback(err, httpResponse, result) {
             if (err) {
                 console.log('Error: ' + err);
+                // Continue the loop
+                if (++pdiqClientConfig.gameNumber <= self.numberOfGames) {
+                    setTimeout(function() {
+                        self.run();
+                    }, 50);
+                } else {
+                    self.end();
+                }
             } else {
                 if (result && result.bet) {
                     /**
