@@ -1,4 +1,4 @@
-// TODO: import pdiqclient library here
+// TODO: import CoinIQ library here
 
 // initialize a new CoinIQ client
 var coinIQ = new CoinIQ({
